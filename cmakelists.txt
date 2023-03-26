@@ -1,0 +1,132 @@
+cmake_minimum_required(VERSION 3.21...3.25 FATAL_ERROR)
+
+if(${CMAKE_VERSION} VERSION_LESS 3.12)
+    cmake_policy(VERSION ${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION})
+endif()
+
+# VCPKG setup
+#-------------
+set(vcpkg "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+
+if(NOT CMAKE_TOOLCHAIN_FILE AND EXISTS "${vcpkg}")
+    set(CMAKE_TOOLCHAIN_FILE "${vcpkg}" CACHE FILEPATH "CMake toolchain file")
+    message(STATUS "vcpkg toolchain found: ${CMAKE_TOOLCHAIN_FILE}")
+endif()
+
+set(VCPKG_MANIFEST_MODE ON)
+
+# shadercompile project
+#-----------------------
+project(shadercompile VERSION 1.0
+                      LANGUAGES CXX)
+
+find_package(libzippp CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_path(TL_EXPECTED_INCLUDE_DIR NAMES tl/expected.hpp)
+find_path(DXC_DIR NAMES thirdparty/dxc)
+
+get_filename_component(THIDPARTY_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH)
+cmake_path(APPEND THIDPARTY_DIR "thirdparty")
+
+# dxc
+#--------------------
+add_library(dxc SHARED IMPORTED)
+
+set_target_properties(dxc PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${THIDPARTY_DIR}/dxc/inc"
+)
+
+if(WIN32)
+    if(${CMAKE_GENERATOR} MATCHES "Visual Studio")
+        set(DXC_ARCH ${CMAKE_VS_PLATFORM_NAME})
+    else()
+        set(DXC_ARCH "x64")
+    endif()
+
+    set(DXCOMPILER_LIB ${THIDPARTY_DIR}/dxc/lib/${DXC_ARCH}/dxcompiler.lib)
+    set(DXCOMPILER_DLL ${THIDPARTY_DIR}/dxc/bin/${DXC_ARCH}/dxcompiler.dll)
+    set(DXIL_DLL ${THIDPARTY_DIR}/dxc/bin/${DXC_ARCH}/dxil.dll)
+
+    if(NOT EXISTS "${DXCOMPILER_LIB}")
+        message(FATAL_ERROR "Could not find dxcompiler.lib at path ${DXCOMPILER_LIB}")
+    endif()
+
+    if(NOT EXISTS "${DXCOMPILER_DLL}")
+        message(FATAL_ERROR "Could not find dxcompiler.dll at path ${DXCOMPILER_DLL}")
+    endif()
+
+    if(NOT EXISTS "${DXIL_DLL}")
+        message(FATAL_ERROR "Could not find dxil.dll at path ${DXIL_DLL}")
+    endif()
+
+    set_property(TARGET dxc PROPERTY
+        IMPORTED_IMPLIB ${DXCOMPILER_LIB})
+
+    set_property(TARGET dxc PROPERTY
+        IMPORTED_LOCATION
+        ${DXCOMPILER_DLL}
+        ${DXIL_DLL}
+    )
+endif()
+
+# shadercompile library
+#-----------------------
+add_library(shadercompile STATIC include/shadercompile/detail/compiler_common.h
+                                 include/shadercompile/detail/dxc_compiler_common.h
+                                 include/shadercompile/dxc.h
+                                 include/shadercompile/dxc_external_compiler.h
+                                 include/shadercompile/dxc_library_compiler.h
+                                 include/shadercompile/dxc_release_manager.h
+                                 include/shadercompile/shadercompile.h
+                                 src/dxc_compiler_common.cpp
+                                 src/dxc_external_compiler.cpp
+                                 src/dxc_library_compiler.cpp
+                                 src/dxc_release_manager.cpp
+                                 src/http_request.h
+                                 src/http_request.cpp
+                                 src/process.h
+                                 src/process.cpp
+                                 src/shadercompile.cpp
+                                 src/utility.h
+                                 src/utility.cpp)
+
+if(WIN32)
+    target_compile_definitions(shadercompile PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+endif(WIN32)
+
+target_include_directories(shadercompile PUBLIC include
+                                                ${TL_EXPECTED_INCLUDE_DIR})
+
+target_link_libraries(shadercompile PUBLIC dxc
+                                           libzip::zip libzippp::libzippp
+                                           nlohmann_json::nlohmann_json
+                                           Winhttp)
+
+target_compile_features(shadercompile PUBLIC cxx_std_20)
+
+target_compile_options(shadercompile PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX>
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -Werror>
+)
+
+# shadercompile_test executable
+#-------------------------------
+add_executable(shadercompile_test test/test.cpp)
+
+if(WIN32)
+    target_compile_definitions(shadercompile_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+endif(WIN32)
+
+target_link_libraries(shadercompile_test PUBLIC shadercompile)
+
+target_compile_features(shadercompile_test PUBLIC cxx_std_20)
+
+target_compile_options(shadercompile_test PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX>
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -Werror>
+)
+
+add_custom_command(TARGET shadercompile_test POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:shadercompile_test> $<TARGET_FILE_DIR:shadercompile_test>
+    COMMAND_EXPAND_LISTS
+)
